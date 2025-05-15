@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
 import pandas as pd
 import json
 import sys
@@ -19,10 +18,7 @@ try:
     df = pd.read_excel(CSV_PATH, dtype={"barcode": str})
     df.fillna("", inplace=True)
 
-    # 🔥 바코드 문자열 변환 + 공백 제거
     df["barcode"] = df["barcode"].astype(str).str.strip()
-
-    # float 변환
     df["protein"] = df["protein"].astype(float)
     df["sugar"] = df["sugar"].astype(float)
     df["sodium"] = df["sodium"].astype(float)
@@ -43,7 +39,7 @@ except Exception as e:
     print(f"[ERROR] JSON 로드 실패: {e}")
     disease_limits = []
 
-# ✅ FastAPI 앱 초기화
+# ✅ FastAPI 초기화
 app = FastAPI()
 
 app.add_middleware(
@@ -54,16 +50,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ✅ 요청 스키마
+# ✅ 요청 스키마 (문자열)
 class BarcodeRequest(BaseModel):
     barcode: str
-    disease_ids: List[int]
+    disease_name: str  # ✔️ 하나만 받음
 
 # ✅ API 엔드포인트
 @app.post("/barcode")
 def get_food_info(req: BarcodeRequest):
-    print(f"[API 요청됨] barcode={req.barcode}, diseases={req.disease_ids}")
-    print(f"[DEBUG] 바코드 비교 대상들: {df['barcode'].tolist()[:5]}")
+    print(f"[API 요청됨] barcode={req.barcode}, disease={req.disease_name}")
 
     barcode = req.barcode.strip()
     result = df[df["barcode"] == barcode]
@@ -78,18 +73,19 @@ def get_food_info(req: BarcodeRequest):
     item_name = row["itemName"]
     calories = row["calories"]
 
-    # ✅ 질환 제한 비교
-    violations = []
-    for d in disease_limits:
-        if d["diseaseId"] in req.disease_ids:
-            if (
-                protein > d["proteinLimit"]
-                or sugar > d["sugarLimit"]
-                or sodium > d["sodiumLimit"]
-            ):
-                violations.append(f'{d["diseaseName"]}: {d["notes"]}')
+    # ✅ 해당 질환 기준 찾기
+    disease = next((d for d in disease_limits if d["diseaseName"] == req.disease_name), None)
 
-    notes = "Safe to consume." if not violations else "Not recommended: " + "; ".join(violations)
+    if not disease:
+        raise HTTPException(status_code=400, detail="해당 질환 이름이 존재하지 않음")
+
+    violation = (
+        protein > disease["proteinLimit"]
+        or sugar > disease["sugarLimit"]
+        or sodium > disease["sodiumLimit"]
+    )
+
+    notes = "Safe to consume." if not violation else f'Not recommended: {disease["diseaseName"]}: {disease["notes"]}'
 
     return {
         "barcode": barcode,
@@ -101,7 +97,7 @@ def get_food_info(req: BarcodeRequest):
         "notes": notes,
     }
 
-# ✅ 직접 실행 시
+# ✅ 실행
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
